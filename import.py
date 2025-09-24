@@ -80,7 +80,7 @@ def find_vendor(name):
         return {'pk': vendor_pk}
     else:
         next_pk = db_exec(engine, "select max(pk) as pk from vendors")[0]['pk'] + 1
-        sql = f"insert into vendors values ({fix_int(next_pk)}, {fix_str(name)})"
+        sql = f"insert into vendors (pk, name) values ({fix_int(next_pk)}, {fix_str(name)})"
         return {'pk': next_pk, 'sql': sql}
 
 
@@ -89,20 +89,21 @@ def find_budget_units(name, num=None):
         # the SA-BC report gives a single budget unit and, seperately, a number.
 
         # check names first.
-        sql = f"select * from budget_unit_names where unit_name = {fix_str(name)}"
+        sql = f"select * from budget_unit_names where name = {fix_str(name)}"
         rows = db_exec(engine, sql)
         if len(rows) == 1:
             return [{'pk': rows[0]['unit_pk']}]
 
         # now chec budget units themselves.
         sql = f"""select * from budget_units
-            where unit_num = {fix_int(num)} and unit_name like '{fix_str_nq(name)}%%' order by pk"""
+            where unit_num = {fix_int(num)} and name like '{fix_str_nq(name)}%%' order by pk"""
         rows = db_exec(engine, sql)
         if len(rows) >= 1:
             return [{'pk': rows[0]['pk']}]
         else:
             next_pk = db_exec(engine, "select max(pk) as pk from budget_units")[0]['pk'] + 1
-            sql = f"insert into budget_units values ({fix_int(next_pk)}, {fix_int(num)}, {fix_str(name)})"
+            sql = f"""insert into budget_units (pk, unit_num, name)
+                      values ({fix_int(next_pk)}, {fix_int(num)}, {fix_str(name)})"""
             return [{'pk': next_pk, 'sql': sql}]
     else:
        # the Contract report gives us a list like 'Unit1 - Num\rUnit 2 - Num'.
@@ -113,7 +114,7 @@ def find_budget_units(name, num=None):
        for unit in units:
 
            # check names first.
-           sql = f"select * from budget_unit_names where unit_name = {fix_str(unit)}"
+           sql = f"select * from budget_unit_names where name = {fix_str(unit)}"
            rows = db_exec(engine, sql)
            if len(rows) == 1:
                results.append({'pk': rows[0]['unit_pk']})
@@ -126,7 +127,7 @@ def find_budget_units(name, num=None):
                u_name = ' - '.join(parts[:-1])
                sql = f"""select * from budget_units
                    where unit_num = {fix_int(u_num)} and
-                       unit_name like '{fix_str_nq(u_name)}%%' order by pk"""
+                       name like '{fix_str_nq(u_name)}%%' order by pk"""
                rows = db_exec(engine, sql)
                if len(rows) >= 1:
                    results.append({'pk': rows[0]['pk']})
@@ -135,11 +136,11 @@ def find_budget_units(name, num=None):
                        next_pk = db_exec(engine, "select max(pk) as pk from budget_units")[0]['pk'] + 1
                    else:
                        next_pk += 1
-                   sql = f"""insert into budget_units values
+                   sql = f"""insert into budget_units (pk, unit_num, name) values
                        ({fix_int(next_pk)}, {fix_int(u_num)}, {fix_str(u_name)})"""
                    results.append({'pk': next_pk, 'sql': sql})
            else:
-               sql = f"select * from budget_units where unit_name like '{fix_str_nq(unit)}%%' order by pk"
+               sql = f"select * from budget_units where name like '{fix_str_nq(unit)}%%' order by pk"
                rows = db_exec(engine, sql)
                if len(rows) >= 1:
                     results.append({'pk': rows[0]['pk']})
@@ -150,7 +151,7 @@ def find_budget_units(name, num=None):
                        next_pk = db_exec(engine, "select max(pk) as pk from budget_units")[0]['pk'] + 1
                    else:
                        next_pk += 1
-                   sql = f"""insert into budget_units values
+                   sql = f"""insert into budget_units (pk, unit_num, name) values
                        ({fix_int(next_pk)}, NULL, {fix_str(unit)})"""
                    results.append({'pk': next_pk, 'sql': sql})
 
@@ -162,13 +163,16 @@ if __name__ == '__main__':
     contract_pk = db_exec(engine, "select max(pk) as pk from contracts")[0]['pk'] + 1
     # print(f"next contract_pk: {contract_pk}")
 
-    files = ['contracts-report-for-month-october-2024.tsv', 'sa-bc-report-for-month-of-october_2024.tsv']
+    # files = ['contracts-report-for-month-october-2024.tsv', 'sa-bc-report-for-month-of-october_2024.tsv']
+    files = ['contractsreportformonthofaugust2025.tsv', 'sabcreportformonthofaugust2025.tsv']
 
     found_users = list()
 
     for file in files:
 
         with open(file, newline='', encoding='latin1') as f:
+            print(f"processing file: {file}...")
+
             rdr = csv.DictReader(f, delimiter='\t')
 
             line = 0
@@ -274,6 +278,7 @@ if __name__ == '__main__':
                 keys.append('vendor_pk')
                 vals.append(fix_int(found['pk']))
 
+                # TODO include column names in this SQL statement? Should I? -rrk 20250924
                 sqls.append(f"insert into contracts ({', '.join(keys)}) values ({', '.join(vals)})")
 
                 # print(f"\nsqls: {'\n'.join(sqls)}")
