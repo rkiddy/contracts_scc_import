@@ -1,5 +1,9 @@
 
+import argparse
 import csv
+import os
+import subprocess
+import sys
 
 from dotenv import dotenv_values
 from sqlalchemy import create_engine
@@ -9,6 +13,12 @@ cfg = dotenv_values('.env')
 engine = create_engine(f"mysql+pymysql://{cfg['USR']}:{cfg['PWD']}@{cfg['HOST']}/{cfg['DB']}")
 conn = engine.connect()
 
+def arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--month_pk', '-m', default='-1', help="Month pk to use.")
+    return parser.parse_args()
+
+
 def db_exec(eng, this_sql):
     # print(f"sql: {sql}")
     if this_sql.strip().startswith('select'):
@@ -16,6 +26,18 @@ def db_exec(eng, this_sql):
     else:
         # print(f"sql: {this_sql}")
         return eng.execute(this_sql)
+
+
+def get_max_pk(table_name):
+    pk_rows = db_exec(conn, f"select max(pk) as max from {table_name}")
+    if len(pk_rows) == 0 or pk_rows[0]['max'] is None:
+        return 0
+    else:
+        return int(pk_rows[0]['max'])
+
+
+def files_with_ending(s):
+    return [r for r in os.listdir() if r.endswith(f".{s}")]
 
 
 def fix_str(val):
@@ -53,7 +75,7 @@ def fix_money(val):
     # the usual case...
     #
     if val.startswith('$'):
-        val = val[1:].replace(' ', '').replace(',', '').replace('.', '')
+        val = val[1:].replace(' ', '').replace(',', '').replace('.', '').replace('\r', '')
         if val == '-':
             return '0'
         else:
@@ -68,6 +90,40 @@ def fix_money(val):
         return str(int(val)*100)
 
     raise Exception(f"UNEXPECTED MONEY VALUE: '{val}'")
+
+
+def is_contracts_file(f):
+    if f is None or f == '':
+        raise Exception(f"Not a valid file, should be \"contract...\" or \"sa-bc...\"")
+    return f.lower().startswith('contract')
+
+
+def is_sabc_file(f):
+    if f is None or f == '':
+        raise Exception(f"Not a valid file, should be \"contract...\" or \"sa-bc...\"")
+    return f.lower().replace('-', '').startswith('sabc')
+
+
+def contracts_source_pk(m_pk):
+    found = list()
+    for row in db_exec(engine, f"select * from sources where month_pk = {m_pk}"):
+        if '/contracts' in row['source_url'].replace(' ', '').replace('-','').lower():
+            found.append(row['pk'])
+    return max(found)
+
+
+def sa_bc_source_pk(m_pk):
+    found = list()
+    for row in db_exec(engine, f"select * from sources where month_pk = {m_pk}"):
+        if '/sabc' in row['source_url'].replace(' ', '').replace('-','').lower():
+            found.append(row['pk'])
+    return max(found)
+
+
+def process_pdf_files():
+    cmd = "java -jar /home/ray/Projects/tabula/tabula-1.0.4-SNAPSHOT-jar-with-dependencies.jar --batch " \
+          "/home/ray/Projects/contracts_scc_import/ --lattice --pages all --format TSV"
+    subprocess.run(cmd, shell=True, check=True)
 
 
 def find_vendor(name):
@@ -160,15 +216,41 @@ def find_budget_units(name, num=None):
 
 if __name__ == '__main__':
 
+    args = arguments()
+
+    if int(args.month_pk) < 0:
+        m_pk = get_max_pk('months')
+    else:
+        m_pk = int(args.month_pk)
+
+    con_pk = contracts_source_pk(m_pk)
+    sabc_pk = sa_bc_source_pk(m_pk)
+    print(f"m_pk: {m_pk}, con_pk: {con_pk}, sabc_pk: {sabc_pk}")
+
     contract_pk = db_exec(engine, "select max(pk) as pk from contracts")[0]['pk'] + 1
-    # print(f"next contract_pk: {contract_pk}")
+    print(f"next contract_pk: {contract_pk}")
 
     # files = ['contracts-report-for-month-october-2024.tsv', 'sa-bc-report-for-month-of-october_2024.tsv']
-    files = ['contractsreportformonthofaugust2025.tsv', 'sabcreportformonthofaugust2025.tsv']
+    pdf_files = files_with_ending('pdf')
+    tsv_files = files_with_ending('tsv')
+    print(f"pdf_files: {pdf_files}")
+    print(f"tsv_files: {tsv_files}")
+
+    if len(pdf_files) != len(tsv_files):
+        print("processing pdf files...")
+        process_pdf_files()
+    else:
+        print("found existing pdf files")
+
+    existing = db_exec(engine, f"select count(0) as count from contracts where month_pk = {m_pk}")[0]['count']
+
+    if existing > 0:
+        print(f"found contracts for month # {existing}. Continue?")
+        sys.stdin.read()
 
     found_users = list()
 
-    for file in files:
+    for file in tsv_files:
 
         with open(file, newline='', encoding='latin1') as f:
             print(f"processing file: {file}...")
@@ -182,9 +264,9 @@ if __name__ == '__main__':
                 line += 1
 
                 sqls = list()
-                bu_sqls = None
+                bu_sqls = list()
 
-                if file.startswith('contracts'):
+                if is_contracts_file(file):
 
                     if row['Owner Name'] == 'Owner Name':
                         continue
@@ -219,9 +301,12 @@ if __name__ == '__main__':
                     keys.append('commodity_desc')
                     vals.append(fix_str(row['Commodity Description']))
 
+                    keys.append('source_pk')
+                    vals.append(fix_int(131))
+
                     bu_sqls = find_budget_units(row['Authorized Users'])
 
-                if file.startswith('sa-bc'):
+                elif is_sabc_file(file):
 
                     if row['Report Month'] == 'Report Month':
                         continue
@@ -253,13 +338,16 @@ if __name__ == '__main__':
                     keys.append('commodity_desc')
                     vals.append(fix_str(row['Commodity Description']))
 
+                    keys.append('source_pk')
+                    vals.append(fix_int(132))
+
                     bu_sqls = find_budget_units(row['Budget Unit Name'], row['Budget Unit'])
 
-                keys.append('month_pk')
-                vals.append(fix_int(56))
+                else:
+                    raise Exception(f"file cannot be identified: {file}")
 
-                keys.append('source_pk')
-                vals.append(fix_int(117))
+                keys.append('month_pk')
+                vals.append(str(m_pk))
 
                 keys.append('line_num')
                 vals.append(fix_int(line))
